@@ -84,113 +84,127 @@ def resolve_prompt_paths(folder: str | Path) -> tuple[Path, Path, Path]:
         paths.append(found)
     return tuple(paths)
 
-class EvaluationSpace():
-    def __init__(
-            self,
-            prompts_folder: str | Path = None,
-            target_prompt_path: str | Path = None,
-            dataset_prompt_path: str | Path = None,
-            grader_prompt_path: str | Path = None,
-    ):
-        self.target_prompt = None
-        self.dataset_prompt = None
-        self.grader_prompt = None
+def load_evaluation_prompts(
+        prompts_folder: str | Path = None,
+        target_prompt_path: str | Path = None,
+        dataset_prompt_path: str | Path = None,
+        grader_prompt_path: str | Path = None,
+) -> tuple[str, str, str]:
+    if prompts_folder:
+        target_prompt_path, dataset_prompt_path, grader_prompt_path = \
+            resolve_prompt_paths(prompts_folder)
 
-        if prompts_folder:
-            target_prompt_path, dataset_prompt_path, grader_prompt_path = \
-                resolve_prompt_paths(prompts_folder)
+    if not all([target_prompt_path, dataset_prompt_path, grader_prompt_path]):
+        raise ValueError(
+            "Must provide either prompts_folder or all three of "
+            "target_prompt_path, dataset_prompt_path, grader_prompt_path"
+        )
 
-        if not all([target_prompt_path, dataset_prompt_path, grader_prompt_path]):
-            raise ValueError(
-                "Must provide either prompts_folder or all three of "
-                "target_prompt_path, dataset_prompt_path, grader_prompt_path"
-            )
+    target_prompt = load_prompt(target_prompt_path)
+    dataset_prompt = load_prompt(dataset_prompt_path)
+    grader_prompt = load_prompt(grader_prompt_path)
 
-        with open(target_prompt_path, "r", encoding="utf-8") as f:
-            self.target_prompt = f.read()
-        with open(dataset_prompt_path, "r", encoding="utf-8") as f:
-            self.dataset_prompt = f.read()
-        with open(grader_prompt_path, "r", encoding="utf-8") as f:
-            self.grader_prompt = f.read()
+    return target_prompt, dataset_prompt, grader_prompt
 
-    # run prompt validation functions
-    def _validate(self) -> bool:
-        is_valid = is_valid_target_prompt(self.target_prompt)
-        return is_valid
- 
-    def generate_dataset(self) -> list[dict]:
-        messages = []
-        add_user_message(messages, self.dataset_prompt)
-        add_assistant_message(messages, "```json")
-        text = chat(messages, stop_sequences=["```"])
-        return json.loads(text)
 
-    # runs the prompt to evaluate against a test case from the generated dataset 
-    def run_prompt(self, test_case: dict) -> str:
-        messages = []
-        add_user_message(messages, compile_prompt_template(self.target_prompt, { "task": test_case["task"] }))
-        output = chat(messages)
-        return output
+# run prompt validation functions
+def validate(target_prompt: str) -> bool:
+    is_valid = is_valid_target_prompt(target_prompt)
+    return is_valid
 
-    # run the grading prompt with test case and test case result
-    def grade_by_model(self, test_case: dict, result: str) -> dict:
-        messages = []
-        add_user_message(messages, compile_prompt_template(self.grader_prompt, { "task": test_case["task"], "result": result}))
-        add_assistant_message(messages, "```json")
-        eval_text = chat(messages, stop_sequences=["```"], temperature=0) # frozen inference -> grader should be deterministic-ish
 
-        return json.loads(eval_text)
+def generate_dataset(dataset_prompt: str) -> list[dict]:
+    messages = []
+    add_user_message(messages, dataset_prompt)
+    add_assistant_message(messages, "```json")
+    text = chat(messages, stop_sequences=["```"])
+    return json.loads(text)
 
-    # run a test case with run_prompt + grade_by_model -> return both result and evaluation
-    def run_test_case(self, test_case: dict) -> dict:
-        try:
-            result = self.run_prompt(test_case)
-            grade = self.grade_by_model(test_case, result)
-            return {"result": result, **grade, "error": None}
-        except Exception as err:
-            return {"result": None, "error": err}
-    
-    # run run_test_case for all test cases in a dataset
-    def run_eval(self, dataset: dict) -> list:
-        dataset_eval = []
-        for test_case in dataset:
-            dataset_eval.append(self.run_test_case(test_case))
-        return dataset_eval
 
-    def _generate_run_uuid(self) -> str:
-        return uuid4().hex[:8]
+# runs the prompt to evaluate against a test case from the generated dataset
+def run_prompt(target_prompt: str, test_case: dict) -> str:
+    messages = []
+    add_user_message(messages, compile_prompt_template(target_prompt, {"task": test_case["task"]}))
+    output = chat(messages)
+    return output
 
-    def run(self, output_folder_path: str = ".output") -> None:
-        if not self._validate():
-            print("[ERROR] Target prompt is not valid.")
-            sys.exit(1)
 
-        run_id = self._generate_run_uuid()
-        output_dir = Path(output_folder_path)
-        output_dir.mkdir(parents=True, exist_ok=True)
+# run the grading prompt with test case and test case result
+def grade_by_model(grader_prompt: str, test_case: dict, result: str) -> dict:
+    messages = []
+    add_user_message(messages, compile_prompt_template(grader_prompt, {"task": test_case["task"], "result": result}))
+    add_assistant_message(messages, "```json")
+    eval_text = chat(messages, stop_sequences=["```"], temperature=0)  # frozen inference -> grader should be deterministic-ish
 
-        # generate dataset
-        spinner = Spinner("Generating dataset")
-        spinner.start()
-        dataset = self.generate_dataset()
-        elapsed = spinner.stop()
-        print(f"\u2713 Dataset generated in {elapsed:.2f}s")
+    return json.loads(eval_text)
 
-        # save dataset to disk
-        with open(output_dir / f"dataset-{run_id}.json", "w") as f:
-            json.dump(dataset, f, indent=2)
 
-        # run evaluation
-        spinner = Spinner("Running evaluation")
-        spinner.start()
-        evaluation = self.run_eval(dataset)
-        elapsed = spinner.stop()
-        print(f"\u2713 Evaluation completed in {elapsed:.2f}s")
+# run a test case with run_prompt + grade_by_model -> return both result and evaluation
+def run_test_case(target_prompt: str, grader_prompt: str, test_case: dict) -> dict:
+    try:
+        result = run_prompt(target_prompt, test_case)
+        grade = grade_by_model(grader_prompt, test_case, result)
+        return {"result": result, **grade, "error": None}
+    except Exception as err:
+        return {"result": None, "error": str(err)}
 
-        # save evaluation to disk
-        with open(output_dir / f"evaluation-{run_id}.json", "w") as f:
-            json.dump(evaluation, f, indent=2)
-        
+
+# run run_test_case for all test cases in a dataset
+def run_eval(target_prompt: str, grader_prompt: str, dataset: list[dict]) -> list:
+    dataset_eval = []
+    for test_case in dataset:
+        dataset_eval.append(run_test_case(target_prompt, grader_prompt, test_case))
+    return dataset_eval
+
+
+def generate_run_uuid() -> str:
+    return uuid4().hex[:8]
+
+
+def run(
+        prompts_folder: str | Path = None,
+        target_prompt_path: str | Path = None,
+        dataset_prompt_path: str | Path = None,
+        grader_prompt_path: str | Path = None,
+        output_folder_path: str | Path = ".output",
+) -> None:
+    target_prompt, dataset_prompt, grader_prompt = load_evaluation_prompts(
+        prompts_folder=prompts_folder,
+        target_prompt_path=target_prompt_path,
+        dataset_prompt_path=dataset_prompt_path,
+        grader_prompt_path=grader_prompt_path,
+    )
+
+    if not validate(target_prompt):
+        print("[ERROR] Target prompt is not valid.")
+        sys.exit(1)
+
+    run_id = generate_run_uuid()
+    output_dir = Path(output_folder_path)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # generate dataset
+    spinner = Spinner("Generating dataset")
+    spinner.start()
+    dataset = generate_dataset(dataset_prompt)
+    elapsed = spinner.stop()
+    print(f"\u2713 Dataset generated in {elapsed:.2f}s")
+
+    # save dataset to disk
+    with open(output_dir / f"dataset-{run_id}.json", "w") as f:
+        json.dump(dataset, f, indent=2)
+
+    # run evaluation
+    spinner = Spinner("Running evaluation")
+    spinner.start()
+    evaluation = run_eval(target_prompt, grader_prompt, dataset)
+    elapsed = spinner.stop()
+    print(f"\u2713 Evaluation completed in {elapsed:.2f}s")
+
+    # save evaluation to disk
+    with open(output_dir / f"evaluation-{run_id}.json", "w") as f:
+        json.dump(evaluation, f, indent=2)
+
+
 if __name__ == "__main__":
-    eval_space = EvaluationSpace("example-prompts")
-    eval_space.run()
+    run(prompts_folder="example-prompts")
