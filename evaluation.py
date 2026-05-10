@@ -25,7 +25,7 @@ def add_assistant_message(messages, text):
 def chat(messages, system=None, temperature=1.0, stop_sequences=[]):
     params = {
         "model": model,
-        "max_tokens": 1000,
+        "max_tokens": 8000,
         "messages": messages,
         "temperature": temperature,
         "stop_sequences": stop_sequences,
@@ -137,7 +137,7 @@ class EvaluationSpace():
         messages = []
         add_user_message(messages, compile_prompt_template(self.grader_prompt, { "task": test_case["task"], "result": result}))
         add_assistant_message(messages, "```json")
-        eval_text = chat(messages, stop_sequences=["```"])
+        eval_text = chat(messages, stop_sequences=["```"], temperature=0) # frozen inference -> grader should be deterministic-ish
 
         return json.loads(eval_text)
 
