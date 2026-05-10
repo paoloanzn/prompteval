@@ -135,7 +135,7 @@ class EvaluationSpace():
     # run the grading prompt with test case and test case result
     def grade_by_model(self, test_case: dict, result: str) -> dict:
         messages = []
-        add_user_message(messages, compile_prompt_template(self.grader_prompt, { "test_case": test_case["task"], "result": result}))
+        add_user_message(messages, compile_prompt_template(self.grader_prompt, { "task": test_case["task"], "result": result}))
         add_assistant_message(messages, "```json")
         eval_text = chat(messages, stop_sequences=["```"])
 
