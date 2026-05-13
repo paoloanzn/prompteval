@@ -129,23 +129,68 @@ def run_prompt(target_prompt: str, test_case: dict, temperature: float = 1.0) ->
     output = chat(messages, temperature=temperature)
     return output
 
+def _extract_json_object(text: str) -> str:
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else ""
+    if text.endswith("```"):
+        text = text[:-3]
+
+    start, end = text.find("{"), text.rfind("}")
+    return text[start:end + 1].strip() if start != -1 and start < end else text.strip()
+
+
+def _escape_stray_backslashes(text: str) -> str:
+    # Double invalid JSON escapes (\_, \-, \() while leaving valid escapes alone.
+    return re.sub(
+        r"\\(.)",
+        lambda m: m.group(0) if m.group(1) in r'"\/bfnrtu' else r"\\" + m.group(1),
+        text,
+    )
+
+
+# escape quotes inside JSON strings that are not structural string terminators
+def _escape_unescaped_string_quotes(text: str) -> str:
+    out: list[str] = []
+    in_string = False
+    escaped = False
+
+    for i, ch in enumerate(text):
+        if ch == '"' and not escaped:
+            if in_string:
+                j = i + 1
+                while j < len(text) and text[j].isspace():
+                    j += 1
+                if j < len(text) and text[j] not in ",:}]":
+                    out.append(r'\"')
+                    continue
+            in_string = not in_string
+
+        out.append(ch)
+        escaped = ch == "\\" and not escaped
+        if ch != "\\":
+            escaped = False
+
+    return "".join(out)
+
+
 # Parse a model-produced JSON object, tolerating common small JSON mistakes
 def parse_json_object(text: str) -> dict:
-    start, end = text.find("{"), text.rfind("}")
-    if start != -1 and start < end:
-        text = text[start:end + 1]
+    text = _extract_json_object(text)
+    attempts = [
+        text,
+        _escape_stray_backslashes(text),
+        _escape_unescaped_string_quotes(_escape_stray_backslashes(text)),
+    ]
 
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        # Double stray backslashes (\_, \-, \() while leaving valid escapes alone.
-        # Match \X as a pair so an already-valid \\ isn't turned into \\\.
-        text = re.sub(
-            r"\\(.)",
-            lambda m: m.group(0) if m.group(1) in r'"\/bfnrtu' else r"\\" + m.group(1),
-            text,
-        )
-        return json.loads(text)
+    last_error = None
+    for candidate in attempts:
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError as err:
+            last_error = err
+
+    raise last_error
 
 # run the grading prompt with test case and test case result
 def grade_by_model(grader_prompt: str, test_case: dict, result: str) -> dict:
