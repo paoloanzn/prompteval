@@ -122,10 +122,10 @@ def generate_dataset(dataset_prompt: str) -> list[dict]:
 
 
 # runs the prompt to evaluate against a test case from the generated dataset
-def run_prompt(target_prompt: str, test_case: dict) -> str:
+def run_prompt(target_prompt: str, test_case: dict, temperature: float = 1.0) -> str:
     messages = []
     add_user_message(messages, compile_prompt_template(target_prompt, {"task": test_case["task"]}))
-    output = chat(messages)
+    output = chat(messages, temperature=temperature)
     return output
 
 
