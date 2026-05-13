@@ -72,11 +72,13 @@ class Module:
         return y, traces
 
 # Bundle of prompts of every module Mi in the system S
+@dataclass
 class Candidate:
     prompts: list[str]
     parent_index: int | None = None
 
 # what the system does not see that is needed to score the output y in shape Y of it
+@dataclass
 class InstanceMetadata:
     gold: dict[str, Any]
 
@@ -189,3 +191,139 @@ def select_candidate(scores: np.ndarray) -> int:
     keys = list(fitness.keys())
     weights = list(fitness.values())
     return random.choices(keys, weights=weights, k=1)[0]
+
+# round robin module selection
+# NOTE: in this one-module system implementation this will always return the index of the only module present -> 0
+def select_module(iteration: int, n_modules: int) -> int:
+    return iteration % n_modules
+
+# factory function
+# NOTE: currently supports only -> {system_prompt, task} module type
+def make_inference_fn() -> Callable[[Schema, str], tuple[Schema, Schema]]:
+    def run_inference(x: Schema, prompt: str) -> tuple[Schema, Schema]:
+        result = run_prompt(prompt, x, 1.0)
+        trace = {"input": x, "output": result, "prompt": prompt}
+        return {"result": result}, trace
+    return run_inference
+
+def single_module_control_flow(modules: list[Module], x: Schema) -> tuple[Schema, list[Schema]]:
+    y, trace = modules[0](x)
+    return y, [trace]
+
+# NOTE: in this implementation j == 0
+def build_system_from_candidate(candidate: Candidate, base_system: System) -> System:
+    new_modules = [Module(
+        prompt=candidate.prompts[j],
+        in_schema=base_system.modules[j].in_schema,
+        out_schema=base_system.modules[j].out_schema,
+        run_inference=base_system.modules[j].run_inference,
+    ) for j in range(len(base_system.modules))]
+
+    return System(
+        new_modules, 
+        control_flow=base_system.control_flow, 
+        in_schema=base_system.in_schema, 
+        out_schema=base_system.out_schema
+        )
+
+def run_gepa(
+        seed_prompt: str, 
+        dataset: list[str], 
+        grader_prompt: str, 
+        rollout_budget: int = 50, 
+        minibatch_size: int = 3,
+        pareto_set_ratio: float = 0.4
+        ) -> tuple[str, list[Candidate], np.ndarray]:
+
+    # split the dataset in two groups
+    # feedback_set -> used to run the prompt and score the results at each rollout iteration
+    # pareto_set -> used to score the result of the optimized prompt at every iteration
+    # we split the set so that the optimizer nevers sees the pareto_set
+    # -> does not over-fit the optimization on the dataset
+    random.shuffle(dataset)
+    split_index = max(1, int(len(dataset) * (1 - pareto_set_ratio)))
+    feedback_set = [InstanceMetadata(gold=d) for d in dataset[:split_index]]
+    pareto_set = [InstanceMetadata(gold=d) for d in dataset[split_index:]]
+
+    base_module = Module(prompt=seed_prompt, in_schema={"task", str}, out_schema={"result", str}, run_inference=make_inference_fn())
+    base_system = System(modules=[base_module], control_flow=single_module_control_flow, in_schema={"task": str}, out_schema={"result": str})
+
+    pool: list[Candidate] = [Candidate(prompts=[seed_prompt], parent_index=None)]
+    rollout_used = 0
+
+    # seeding scoring
+    initial = []
+    for m in pareto_set:
+        score, _feedback, _traces = rollout(base_system, {"task": m.gold["task"]}, m, grader_prompt)
+        initial.append(score)
+    scores = np.array([initial])
+    rollout_used = len(pareto_set)
+
+    # optimization loop
+    iteration = 0
+    while rollout_used < rollout_budget:
+        parent_idx = select_candidate(scores)
+        parent = pool[parent_idx]
+
+        # NOTE: for our current implementation this is always 0
+        j = select_module(iteration, len(base_system.modules))
+        
+        # pick minibatch_size_N random examples from d_feedback
+        # OR
+        # pick all d_feedback if there are less then minibatch_size
+        minibatch = []
+        if len(feedback_set) < minibatch_size:
+            minibatch = feedback_set
+        else:
+            minibatch = random.sample(feedback_set, minibatch_size)
+
+        parent_system = build_system_from_candidate(parent, base_system)
+        parent_module_traces: list[Schema] = []
+        parent_feedbacks: list[tuple[float, str]] = []
+        for m in minibatch:
+            score, feedback, traces = rollout(parent_system, {"task": m.gold["task"]}, m, grader_prompt)
+            parent_module_traces.append[traces[j]]
+            parent_feedbacks.append[(score, feedback)]
+        rollout_used += len(minibatch)
+
+        # compute avg score in the minibatch
+        sigma_parent = sum(s for s, _ in parent_feedbacks) / len(parent_feedbacks)
+
+        # stop when budget is exhausted 
+        if rollout_used >= rollout_budget:
+            break
+        
+        # according to reference paper's convention we DON'T count this API call in the budget
+        new_prompt = reflect_and_rewrite(old_prompt=parent.prompts[j], traces=parent_module_traces, feedbacks=parent_feedbacks)
+
+        child_prompts = list(parent.prompts)
+        child_prompts[j] = new_prompt
+        # parent_index tell us from which prompt's module the child came from
+        child = Candidate(prompts=child_prompts, parent_index=parent_idx)
+
+        child_system = build_system_from_candidate(child, base_system)
+        child_feedbacks: list[tuple[float, str]] = []
+        for m in minibatch:
+            score, feedback, _ = rollout(
+                child_system, {"task": m.gold["task"]}, m, grader_prompt
+            )
+            child_feedbacks.append((score, feedback))
+        rollout_used += len(minibatch)
+        sigma_child = sum(s for s, _ in child_feedbacks) / len(child_feedbacks)
+
+        # rollout budget is spent ONLY if the child scored better then the parent
+        if sigma_child > sigma_parent and rollout_used < rollout_budget:
+            child_pareto_scores: list[float] = []
+            for m in pareto_set:
+                score, _, _ = rollout(
+                    child_system, {"task": m.gold["task"]}, m, grader_prompt
+                )
+            child_pareto_scores.append(score)
+            rollout_used += len(pareto_set)
+            pool.append[child]
+            scores = np.vstack([scores, child_pareto_scores])
+
+            iteration += 1
+        
+        best_index = int(scores.mean(axis=1).argmax())
+        return pool[best_index].prompts[0], pool, scores
