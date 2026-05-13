@@ -1,4 +1,5 @@
 from typing import Any
+import random
 from dataclasses import dataclass
 from collections.abc import Callable
 from evaluation import (
@@ -10,6 +11,7 @@ from evaluation import (
     run_prompt,
     grade_by_model,
 )
+import numpy as np
 from prompts import REFLECTION_META_PROMPT, TRACE_BLOCK
 
 type Schema = dict[Any, Any]
@@ -131,3 +133,59 @@ def reflect_and_rewrite(old_prompt: str, traces: list[Schema], feedbacks: list[t
         new = chat(messages, stop_sequences=["</new_instructions>"], temperature=1)
 
         return new.strip()
+
+# example of scores
+#          instance0  instance1  instance2
+# Π_0  →   [0.3,      0.9,       0.1]
+# Π_1  →   [0.95,     0.5,       0.7]
+# Π_2  →   [0.7,      0.95,      0.2]
+# Π = candidates
+# instance = example from D_pareto
+
+# scores[k][i] -> returns an index k
+def select_candidate(scores: np.ndarray) -> int:
+    # k, i
+    n_candidates, n_instances = scores.shape
+    
+    best_per_instance = scores.max(axis=0) # winning scores per instance -> ([0.95, 0.95, 0.7])
+    # indexes of winning candidates per instance -> [{1}, {2}, {1}]
+    # len(winners_per_instance) == i and len(winners_per_instance[i]) <= k
+    winners_per_instance: list[set[int]] = []
+
+    for i in range(n_instances):
+        col_i = scores[:, i] # all candidates scores for col i
+        top_score = best_per_instance[i]
+        is_winner_arr = top_score == col_i # np([False, True, True]) -> for each score in col_i tells if its the highest
+        # NOTE: this works only with 1-DIM arrays
+        winner_indexes = np.where(is_winner_arr)[0] # np([1, 2])
+        winners_per_instance.append(set(winner_indexes.tolist()))
+
+    # set of indexes [k] of all k elements(candidates) that won at least one instance i
+    contenders: set[int] = set.union(*winners_per_instance)
+
+    # compare two candidates k in scores[k][i] and return True if a dominates b
+    # dominates -> highest score for every i OR same score for every i but at least higher in one i
+    # a => [0.3,      0.9,       0.1]
+    # b => [0.7,      0.95,      0.2]
+    # b dominates a
+    def dominates(a: int, b: int) -> bool:
+        ge_all = all(scores[a][i] >= scores[b][i] for i in range(n_instances))
+        gt_any = any(scores[a][i] >  scores[b][i] for i in range(n_instances))
+        return ge_all and gt_any
+
+    # drop ALL candidates that are dominated by at least 1 other candidate 
+    # keep ONLY un-dominated candidates
+    survivors: set[int] = {
+        k for k in contenders if not any(dominates(other, k) for other in contenders if other != k)
+    }
+
+    # for every survivor we count how many instances they won
+    fitness: dict[int, int] = {
+        k: sum(1 for ws in winner_indexes if k in ws) for k in survivors
+    }
+    
+    # pick only one candidate -> its fitness number becomes the probability weight of being chosen
+    # the more instances i a candidate k won, the more probable is for it to be picked
+    keys = list(fitness.keys())
+    weights = list(fitness.values())
+    return random.choices(keys, weights=weights, k=1)[0]
