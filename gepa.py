@@ -1,5 +1,7 @@
 from typing import Any
+import json
 import random
+from pathlib import Path
 from dataclasses import dataclass
 from collections.abc import Callable
 from evaluation import (
@@ -10,9 +12,11 @@ from evaluation import (
     generate_dataset,
     run_prompt,
     grade_by_model,
+    generate_run_uuid,
 )
 import numpy as np
 from prompts import REFLECTION_META_PROMPT, TRACE_BLOCK
+from spinner import Spinner
 
 type Schema = dict[Any, Any]
 
@@ -124,17 +128,18 @@ def reflect_and_rewrite(old_prompt: str, traces: list[Schema], feedbacks: list[t
             feedback=fb,
         )
         trace_blocks += (new_trace + "\n")
-        compiled_prompt = REFLECTION_META_PROMPT.format(
-            old_prompt=old_prompt,
-            trace_blocks=trace_blocks,
-        )
 
-        messages = []
-        add_user_message(messages, compiled_prompt)
-        add_assistant_message(messages, "<new_instruction>")
-        new = chat(messages, stop_sequences=["</new_instructions>"], temperature=1)
+    compiled_prompt = REFLECTION_META_PROMPT.format(
+        old_prompt=old_prompt,
+        trace_blocks=trace_blocks,
+    )
 
-        return new.strip()
+    messages = []
+    add_user_message(messages, compiled_prompt)
+    add_assistant_message(messages, "<new_instructions>")
+    new = chat(messages, stop_sequences=["</new_instructions>"], temperature=1)
+
+    return new.strip()
 
 # example of scores
 #          instance0  instance1  instance2
@@ -183,7 +188,7 @@ def select_candidate(scores: np.ndarray) -> int:
 
     # for every survivor we count how many instances they won
     fitness: dict[int, int] = {
-        k: sum(1 for ws in winner_indexes if k in ws) for k in survivors
+        k: sum(1 for ws in winners_per_instance if k in ws) for k in survivors
     }
     
     # pick only one candidate -> its fitness number becomes the probability weight of being chosen
@@ -201,7 +206,7 @@ def select_module(iteration: int, n_modules: int) -> int:
 # NOTE: currently supports only -> {system_prompt, task} module type
 def make_inference_fn() -> Callable[[Schema, str], tuple[Schema, Schema]]:
     def run_inference(x: Schema, prompt: str) -> tuple[Schema, Schema]:
-        result = run_prompt(prompt, x, 1.0)
+        result = run_prompt(prompt, x, temperature=1.0)
         trace = {"input": x, "output": result, "prompt": prompt}
         return {"result": result}, trace
     return run_inference
@@ -226,104 +231,249 @@ def build_system_from_candidate(candidate: Candidate, base_system: System) -> Sy
         out_schema=base_system.out_schema
         )
 
+def _candidate_to_dict(candidate: Candidate) -> dict[str, Any]:
+    return {"prompts": candidate.prompts, "parent_index": candidate.parent_index}
+
+
+def _save_gepa_run(
+        output_dir: Path,
+        run_id: str,
+        seed_prompt: str,
+        best_prompt: str,
+        pool: list[Candidate],
+        scores: np.ndarray,
+        rollout_used: int,
+        rollout_budget: int,
+        extra: dict[str, Any] | None = None,
+) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / f"gepa-{run_id}.json"
+    payload: dict[str, Any] = {
+        "run_id": run_id,
+        "seed_prompt": seed_prompt,
+        "best_prompt": best_prompt,
+        "rollout_used": rollout_used,
+        "rollout_budget": rollout_budget,
+        "candidates": [_candidate_to_dict(candidate) for candidate in pool],
+        "scores": scores.tolist(),
+        "mean_scores": scores.mean(axis=1).tolist() if scores.size else [],
+    }
+    if extra:
+        payload.update(extra)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+    return path
+
+
 def run_gepa(
         seed_prompt: str, 
-        dataset: list[str], 
+        dataset: list[dict], 
         grader_prompt: str, 
         rollout_budget: int = 50, 
         minibatch_size: int = 3,
-        pareto_set_ratio: float = 0.4
+        pareto_set_ratio: float = 0.4,
+        output_folder_path: str | Path = ".output",
+        run_id: str | None = None,
+        save_progress: bool = True,
+        spinner: Spinner | None = None,
         ) -> tuple[str, list[Candidate], np.ndarray]:
+
+    if not dataset:
+        raise ValueError("dataset must contain at least one test case")
+
+    run_id = run_id or generate_run_uuid()
+    output_dir = Path(output_folder_path)
 
     # split the dataset in two groups
     # feedback_set -> used to run the prompt and score the results at each rollout iteration
     # pareto_set -> used to score the result of the optimized prompt at every iteration
     # we split the set so that the optimizer nevers sees the pareto_set
     # -> does not over-fit the optimization on the dataset
+    dataset = list(dataset)
     random.shuffle(dataset)
     split_index = max(1, int(len(dataset) * (1 - pareto_set_ratio)))
+    if split_index >= len(dataset) and len(dataset) > 1:
+        split_index = len(dataset) - 1
     feedback_set = [InstanceMetadata(gold=d) for d in dataset[:split_index]]
-    pareto_set = [InstanceMetadata(gold=d) for d in dataset[split_index:]]
+    pareto_source = dataset[split_index:] or dataset[:1]
+    pareto_set = [InstanceMetadata(gold=d) for d in pareto_source]
 
-    base_module = Module(prompt=seed_prompt, in_schema={"task", str}, out_schema={"result", str}, run_inference=make_inference_fn())
+    if save_progress:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        with open(output_dir / f"gepa-dataset-{run_id}.json", "w", encoding="utf-8") as f:
+            json.dump(dataset, f, indent=2)
+
+    base_module = Module(prompt=seed_prompt, in_schema={"task": str}, out_schema={"result": str}, run_inference=make_inference_fn())
     base_system = System(modules=[base_module], control_flow=single_module_control_flow, in_schema={"task": str}, out_schema={"result": str})
 
     pool: list[Candidate] = [Candidate(prompts=[seed_prompt], parent_index=None)]
     rollout_used = 0
 
     # seeding scoring
-    initial = []
-    for m in pareto_set:
-        score, _feedback, _traces = rollout(base_system, {"task": m.gold["task"]}, m, grader_prompt)
-        initial.append(score)
+    if spinner:
+        spinner.message = "Scoring seed prompt on Pareto set"
+        spinner.start()
+    try:
+        initial = []
+        for m in pareto_set:
+            score, _feedback, _traces = rollout(base_system, {"task": m.gold["task"]}, m, grader_prompt)
+            initial.append(score)
+    finally:
+        if spinner:
+            elapsed = spinner.stop()
+            print(f"✓ Seed prompt scored in {elapsed:.2f}s")
+
     scores = np.array([initial])
     rollout_used = len(pareto_set)
 
+    if save_progress:
+        _save_gepa_run(
+            output_dir=output_dir,
+            run_id=run_id,
+            seed_prompt=seed_prompt,
+            best_prompt=seed_prompt,
+            pool=pool,
+            scores=scores,
+            rollout_used=rollout_used,
+            rollout_budget=rollout_budget,
+            extra={"status": "seed_scored"},
+        )
+
     # optimization loop
     iteration = 0
-    while rollout_used < rollout_budget:
-        parent_idx = select_candidate(scores)
-        parent = pool[parent_idx]
+    if spinner:
+        spinner.message = "Running GEPA optimization"
+        spinner.start()
+    try:
+        while rollout_used < rollout_budget:
+            parent_idx = select_candidate(scores)
+            parent = pool[parent_idx]
 
-        # NOTE: for our current implementation this is always 0
-        j = select_module(iteration, len(base_system.modules))
-        
-        # pick minibatch_size_N random examples from d_feedback
-        # OR
-        # pick all d_feedback if there are less then minibatch_size
-        minibatch = []
-        if len(feedback_set) < minibatch_size:
-            minibatch = feedback_set
-        else:
-            minibatch = random.sample(feedback_set, minibatch_size)
+            # NOTE: for our current implementation this is always 0
+            j = select_module(iteration, len(base_system.modules))
+            minibatch = feedback_set if len(feedback_set) <= minibatch_size else random.sample(feedback_set, minibatch_size)
 
-        parent_system = build_system_from_candidate(parent, base_system)
-        parent_module_traces: list[Schema] = []
-        parent_feedbacks: list[tuple[float, str]] = []
-        for m in minibatch:
-            score, feedback, traces = rollout(parent_system, {"task": m.gold["task"]}, m, grader_prompt)
-            parent_module_traces.append[traces[j]]
-            parent_feedbacks.append[(score, feedback)]
-        rollout_used += len(minibatch)
+            parent_system = build_system_from_candidate(parent, base_system)
+            parent_module_traces: list[Schema] = []
+            parent_feedbacks: list[tuple[float, str]] = []
+            for m in minibatch:
+                score, feedback, traces = rollout(parent_system, {"task": m.gold["task"]}, m, grader_prompt)
+                parent_module_traces.append(traces[j])
+                parent_feedbacks.append((score, feedback))
+            rollout_used += len(minibatch)
 
-        # compute avg score in the minibatch
-        sigma_parent = sum(s for s, _ in parent_feedbacks) / len(parent_feedbacks)
+            sigma_parent = sum(s for s, _ in parent_feedbacks) / len(parent_feedbacks)
+            if rollout_used >= rollout_budget:
+                break
+            
+            # according to reference paper's convention we DON'T count this API call in the budget
+            new_prompt = reflect_and_rewrite(old_prompt=parent.prompts[j], traces=parent_module_traces, feedbacks=parent_feedbacks)
 
-        # stop when budget is exhausted 
-        if rollout_used >= rollout_budget:
-            break
-        
-        # according to reference paper's convention we DON'T count this API call in the budget
-        new_prompt = reflect_and_rewrite(old_prompt=parent.prompts[j], traces=parent_module_traces, feedbacks=parent_feedbacks)
+            child_prompts = list(parent.prompts)
+            child_prompts[j] = new_prompt
+            child = Candidate(prompts=child_prompts, parent_index=parent_idx)
+            child_system = build_system_from_candidate(child, base_system)
 
-        child_prompts = list(parent.prompts)
-        child_prompts[j] = new_prompt
-        # parent_index tell us from which prompt's module the child came from
-        child = Candidate(prompts=child_prompts, parent_index=parent_idx)
+            child_feedbacks: list[tuple[float, str]] = []
+            for m in minibatch:
+                score, feedback, _ = rollout(child_system, {"task": m.gold["task"]}, m, grader_prompt)
+                child_feedbacks.append((score, feedback))
+            rollout_used += len(minibatch)
+            sigma_child = sum(s for s, _ in child_feedbacks) / len(child_feedbacks)
 
-        child_system = build_system_from_candidate(child, base_system)
-        child_feedbacks: list[tuple[float, str]] = []
-        for m in minibatch:
-            score, feedback, _ = rollout(
-                child_system, {"task": m.gold["task"]}, m, grader_prompt
-            )
-            child_feedbacks.append((score, feedback))
-        rollout_used += len(minibatch)
-        sigma_child = sum(s for s, _ in child_feedbacks) / len(child_feedbacks)
-
-        # rollout budget is spent ONLY if the child scored better then the parent
-        if sigma_child > sigma_parent and rollout_used < rollout_budget:
-            child_pareto_scores: list[float] = []
-            for m in pareto_set:
-                score, _, _ = rollout(
-                    child_system, {"task": m.gold["task"]}, m, grader_prompt
-                )
-            child_pareto_scores.append(score)
-            rollout_used += len(pareto_set)
-            pool.append[child]
-            scores = np.vstack([scores, child_pareto_scores])
+            if sigma_child > sigma_parent and rollout_used < rollout_budget:
+                child_pareto_scores: list[float] = []
+                for m in pareto_set:
+                    score, _, _ = rollout(child_system, {"task": m.gold["task"]}, m, grader_prompt)
+                    child_pareto_scores.append(score)
+                rollout_used += len(pareto_set)
+                pool.append(child)
+                scores = np.vstack([scores, child_pareto_scores])
 
             iteration += 1
-        
-        best_index = int(scores.mean(axis=1).argmax())
-        return pool[best_index].prompts[0], pool, scores
+            if save_progress:
+                best_index = int(scores.mean(axis=1).argmax())
+                _save_gepa_run(
+                    output_dir=output_dir,
+                    run_id=run_id,
+                    seed_prompt=seed_prompt,
+                    best_prompt=pool[best_index].prompts[0],
+                    pool=pool,
+                    scores=scores,
+                    rollout_used=rollout_used,
+                    rollout_budget=rollout_budget,
+                    extra={"status": "running", "iteration": iteration},
+                )
+    finally:
+        if spinner:
+            elapsed = spinner.stop()
+            print(f"✓ GEPA optimization completed in {elapsed:.2f}s")
+
+    best_index = int(scores.mean(axis=1).argmax())
+    best_prompt = pool[best_index].prompts[0]
+    if save_progress:
+        path = _save_gepa_run(
+            output_dir=output_dir,
+            run_id=run_id,
+            seed_prompt=seed_prompt,
+            best_prompt=best_prompt,
+            pool=pool,
+            scores=scores,
+            rollout_used=rollout_used,
+            rollout_budget=rollout_budget,
+            extra={"status": "completed", "iteration": iteration, "best_index": best_index},
+        )
+        print(f"✓ GEPA run saved to {path}")
+    return best_prompt, pool, scores
+
+
+if __name__ == "__main__":
+    from evaluation import load_evaluation_prompts, validate
+
+    prompts_folder = "example-prompts"
+    output_dir = Path(".output")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    run_id = generate_run_uuid()
+
+    target_prompt, dataset_prompt, grader_prompt = load_evaluation_prompts(
+        prompts_folder=prompts_folder,
+    )
+    if not validate(target_prompt):
+        raise SystemExit("[ERROR] target prompt missing {{task}} placeholder")
+
+    spinner = Spinner("Generating dataset")
+    spinner.start()
+    try:
+        dataset = generate_dataset(dataset_prompt)
+    finally:
+        elapsed = spinner.stop()
+        print(f"✓ Dataset generated in {elapsed:.2f}s")
+
+    dataset_path = output_dir / f"dataset-{run_id}.json"
+    with open(dataset_path, "w", encoding="utf-8") as f:
+        json.dump(dataset, f, indent=2)
+    print(f"✓ Dataset saved to {dataset_path}")
+
+    optimized, pool, scores = run_gepa(
+        seed_prompt=target_prompt,
+        dataset=dataset,
+        grader_prompt=grader_prompt,
+        rollout_budget=30,
+        minibatch_size=2,
+        output_folder_path=output_dir,
+        run_id=run_id,
+        save_progress=True,
+        spinner=Spinner(),
+    )
+
+    optimized_path = output_dir / f"optimized-prompt-{run_id}.txt"
+    with open(optimized_path, "w", encoding="utf-8") as f:
+        f.write(optimized)
+    print(f"✓ Optimized prompt saved to {optimized_path}")
+
+    print("\nOptimized prompt:\n")
+    print(optimized)
+    print("\nCandidate scores:")
+    for k, c in enumerate(pool):
+        mean_s = float(scores[k].mean()) if len(scores[k]) else 0.0
+        print(f"  Π_{k} (parent={c.parent_index}) mean_score={mean_s:.3f}")
