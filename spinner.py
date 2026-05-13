@@ -20,6 +20,7 @@ class Spinner:
             time.sleep(0.1)
 
     def start(self):
+        self._stop_event.clear()
         self._start_time = time.time()
         self._thread = threading.Thread(target=self._spin, daemon=True)
         self._thread.start()
