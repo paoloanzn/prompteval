@@ -151,8 +151,8 @@ def reflect_and_rewrite(old_prompt: str, traces: list[Schema], feedbacks: list[t
 
     messages = []
     add_user_message(messages, compiled_prompt)
-    add_assistant_message(messages, "<new_instructions>")
-    new = chat(messages, stop_sequences=["</new_instructions>"], temperature=1)
+    add_assistant_message(messages, "<new_instruction>")
+    new = chat(messages, stop_sequences=["</new_instruction>"], temperature=1)
 
     return new.strip()
 
