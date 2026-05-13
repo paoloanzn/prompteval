@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 from anthropic import Anthropic
 import os
 import json
+import re
 import sys
 from pathlib import Path
 from uuid import uuid4
@@ -128,6 +129,23 @@ def run_prompt(target_prompt: str, test_case: dict, temperature: float = 1.0) ->
     output = chat(messages, temperature=temperature)
     return output
 
+# Parse a model-produced JSON object, tolerating common small JSON mistakes
+def parse_json_object(text: str) -> dict:
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and start < end:
+        text = text[start:end + 1]
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # Double stray backslashes (\_, \-, \() while leaving valid escapes alone.
+        # Match \X as a pair so an already-valid \\ isn't turned into \\\.
+        text = re.sub(
+            r"\\(.)",
+            lambda m: m.group(0) if m.group(1) in r'"\/bfnrtu' else r"\\" + m.group(1),
+            text,
+        )
+        return json.loads(text)
 
 # run the grading prompt with test case and test case result
 def grade_by_model(grader_prompt: str, test_case: dict, result: str) -> dict:
@@ -136,7 +154,7 @@ def grade_by_model(grader_prompt: str, test_case: dict, result: str) -> dict:
     add_assistant_message(messages, "```json")
     eval_text = chat(messages, stop_sequences=["```"], temperature=0)  # frozen inference -> grader should be deterministic-ish
 
-    return json.loads(eval_text)
+    return parse_json_object(eval_text)
 
 
 # run a test case with run_prompt + grade_by_model -> return both result and evaluation
