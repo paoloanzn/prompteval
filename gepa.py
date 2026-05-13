@@ -342,10 +342,13 @@ def run_gepa(
     # optimization loop
     iteration = 0
     if spinner:
-        spinner.message = "Running GEPA optimization"
-        spinner.start()
+        total_elapsed_time = 0
     try:
         while rollout_used < rollout_budget:
+            if spinner:
+                spinner.message = f"Running GEPA optimization | Iteration {iteration + 1}"
+                spinner.start()
+
             parent_idx = select_candidate(scores)
             parent = pool[parent_idx]
 
@@ -404,10 +407,14 @@ def run_gepa(
                     rollout_budget=rollout_budget,
                     extra={"status": "running", "iteration": iteration},
                 )
+            if spinner:
+                elapsed = spinner.stop()
+                total_elapsed_time += elapsed
+                print(f"✓ Iteration {iteration} completed in {elapsed:.2f}s | Budget: {rollout_used}/{rollout_budget}")
+
     finally:
         if spinner:
-            elapsed = spinner.stop()
-            print(f"✓ GEPA optimization completed in {elapsed:.2f}s")
+            print(f"✓ GEPA optimization completed in {total_elapsed_time:.2f}s")
 
     best_index = int(scores.mean(axis=1).argmax())
     best_prompt = pool[best_index].prompts[0]
@@ -458,8 +465,8 @@ if __name__ == "__main__":
         seed_prompt=target_prompt,
         dataset=dataset,
         grader_prompt=grader_prompt,
-        rollout_budget=30,
-        minibatch_size=2,
+        rollout_budget=120,
+        minibatch_size=3,
         output_folder_path=output_dir,
         run_id=run_id,
         save_progress=True,
