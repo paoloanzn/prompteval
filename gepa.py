@@ -103,7 +103,7 @@ def score_with_feedback(grader_prompt: str, y: Schema, m: InstanceMetadata) -> t
     value = max(0.0, min(1.0, raw_score / 5.0))
 
     feedback_text = (
-        f"Score: {raw_score}/10. "
+        f"Score: {raw_score}/5. "
         f"Strengths: {grade.get('strengths', [])}. "
         f"Weaknesses: {grade.get('weaknesses', [])}. "
         f"Reasoning: {grade.get('reasoning', '')}."
