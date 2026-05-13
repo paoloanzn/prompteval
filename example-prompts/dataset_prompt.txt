@@ -1,18 +1,22 @@
-Generate a evaluation dataset for a prompt evaluation. The dataset will be used to evaluate prompts
-that generate Python, JSON, or Regex specifically for AWS-related tasks. Generate an array of JSON objects,
-each representing task that requires Python, JSON, or a Regex to complete.
+Generate an evaluation dataset for testing prompts that triage an insurance claim
+description into a structured decision.
 
-Example output:
+Output format:
 ```json
 [
-    {
-        "task": "Description of task",
-    },
-    ...additional
+  {"task": "Insurance claim narrative:\n<3-5 sentence description of incident, damage, and policy context>\n\nProduce a single triage decision in this exact format:\n  DECISION: <approve|deny|investigate|escalate>\n  REASON_CODE: <one of: covered_peril|excluded_peril|insufficient_evidence|fraud_indicator|policy_lapsed|exceeds_limit|requires_adjuster>\n  CONFIDENCE: <low|medium|high>"},
+  ...
 ]
 ```
 
-* Focus on tasks that can be solved by writing a single Python function, a single JSON object, or a regular expression.
-* Focus on tasks that do not require writing much code
+Constraints on tasks:
+* Mix peril types: water damage, fire, theft, auto collision, hail, liability.
+* Include policy edge cases: flood exclusion in standard homeowners, named-storm
+  deductibles, vehicle use exclusion (commercial vs personal), wear-and-tear vs
+  sudden damage.
+* Include fraud indicators: claim filed weeks after the event, prior similar claims,
+  inconsistencies between police report and claim narrative.
+* Each narrative includes the policy summary inline so the answer is derivable from
+  the task itself.
 
-Please generate 3 objects.
+Generate 10 objects.
