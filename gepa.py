@@ -3,6 +3,7 @@ import json
 import random
 from pathlib import Path
 from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable
 from evaluation import (
     chat,
@@ -97,9 +98,9 @@ def score_with_feedback(grader_prompt: str, y: Schema, m: InstanceMetadata) -> t
     result_text = y["result"]
 
     grade = grade_by_model(grader_prompt, test_case, result_text)
-    # grade_by_model returns a score between 1-10 -> normalize to [0, 1]
+    # grade_by_model returns a score between 1-5 -> normalize to [0, 1]
     raw_score = float(grade.get("score", 0))
-    value = max(0.0, min(1.0, raw_score / 10.0))
+    value = max(0.0, min(1.0, raw_score / 5.0))
 
     feedback_text = (
         f"Score: {raw_score}/10. "
@@ -116,6 +117,20 @@ def rollout(s: System, x: Schema, m: InstanceMetadata, grader_prompt: str) -> li
     y, traces = s(x)
     score, feedback = score_with_feedback(grader_prompt, y, m)
     return score, feedback, traces
+
+
+def rollout_batch(
+        system: System,
+        examples: list[InstanceMetadata],
+        grader_prompt: str,
+        max_workers: int = 8,
+) -> list[tuple[float, str, list[Schema]]]:
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = [
+            ex.submit(rollout, system, {"task": m.gold["task"]}, m, grader_prompt)
+            for m in examples
+        ]
+        return [f.result() for f in futures]
 
 def reflect_and_rewrite(old_prompt: str, traces: list[Schema], feedbacks: list[tuple[float, str]]) -> str:
     trace_blocks = ""
@@ -314,10 +329,9 @@ def run_gepa(
         spinner.message = "Scoring seed prompt on Pareto set"
         spinner.start()
     try:
-        initial = []
-        for m in pareto_set:
-            score, _feedback, _traces = rollout(base_system, {"task": m.gold["task"]}, m, grader_prompt)
-            initial.append(score)
+        initial = [
+            score for score, _feedback, _traces in rollout_batch(base_system, pareto_set, grader_prompt)
+        ]
     finally:
         if spinner:
             elapsed = spinner.stop()
@@ -357,12 +371,9 @@ def run_gepa(
             minibatch = feedback_set if len(feedback_set) <= minibatch_size else random.sample(feedback_set, minibatch_size)
 
             parent_system = build_system_from_candidate(parent, base_system)
-            parent_module_traces: list[Schema] = []
-            parent_feedbacks: list[tuple[float, str]] = []
-            for m in minibatch:
-                score, feedback, traces = rollout(parent_system, {"task": m.gold["task"]}, m, grader_prompt)
-                parent_module_traces.append(traces[j])
-                parent_feedbacks.append((score, feedback))
+            parent_results = rollout_batch(parent_system, minibatch, grader_prompt)
+            parent_module_traces = [traces[j] for _score, _feedback, traces in parent_results]
+            parent_feedbacks = [(score, feedback) for score, feedback, _traces in parent_results]
             rollout_used += len(minibatch)
 
             sigma_parent = sum(s for s, _ in parent_feedbacks) / len(parent_feedbacks)
@@ -377,18 +388,15 @@ def run_gepa(
             child = Candidate(prompts=child_prompts, parent_index=parent_idx)
             child_system = build_system_from_candidate(child, base_system)
 
-            child_feedbacks: list[tuple[float, str]] = []
-            for m in minibatch:
-                score, feedback, _ = rollout(child_system, {"task": m.gold["task"]}, m, grader_prompt)
-                child_feedbacks.append((score, feedback))
+            child_results = rollout_batch(child_system, minibatch, grader_prompt)
+            child_feedbacks = [(score, feedback) for score, feedback, _traces in child_results]
             rollout_used += len(minibatch)
             sigma_child = sum(s for s, _ in child_feedbacks) / len(child_feedbacks)
 
             if sigma_child > sigma_parent and rollout_used < rollout_budget:
-                child_pareto_scores: list[float] = []
-                for m in pareto_set:
-                    score, _, _ = rollout(child_system, {"task": m.gold["task"]}, m, grader_prompt)
-                    child_pareto_scores.append(score)
+                child_pareto_scores = [
+                    score for score, _feedback, _traces in rollout_batch(child_system, pareto_set, grader_prompt)
+                ]
                 rollout_used += len(pareto_set)
                 pool.append(child)
                 scores = np.vstack([scores, child_pareto_scores])
@@ -465,8 +473,8 @@ if __name__ == "__main__":
         seed_prompt=target_prompt,
         dataset=dataset,
         grader_prompt=grader_prompt,
-        rollout_budget=120,
-        minibatch_size=3,
+        rollout_budget=600,
+        minibatch_size=4,
         output_folder_path=output_dir,
         run_id=run_id,
         save_progress=True,
