@@ -2,11 +2,11 @@ from dotenv import load_dotenv
 from anthropic import Anthropic
 import os
 import json
-import re
 import sys
 from pathlib import Path
 from uuid import uuid4
 from spinner import Spinner
+import json_repair
 
 load_dotenv()
 
@@ -129,68 +129,17 @@ def run_prompt(target_prompt: str, test_case: dict, temperature: float = 1.0) ->
     output = chat(messages, temperature=temperature)
     return output
 
-def _extract_json_object(text: str) -> str:
-    text = text.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1] if "\n" in text else ""
-    if text.endswith("```"):
-        text = text[:-3]
-
-    start, end = text.find("{"), text.rfind("}")
-    return text[start:end + 1].strip() if start != -1 and start < end else text.strip()
-
-
-def _escape_stray_backslashes(text: str) -> str:
-    # Double invalid JSON escapes (\_, \-, \() while leaving valid escapes alone.
-    return re.sub(
-        r"\\(.)",
-        lambda m: m.group(0) if m.group(1) in r'"\/bfnrtu' else r"\\" + m.group(1),
-        text,
-    )
-
-
-# escape quotes inside JSON strings that are not structural string terminators
-def _escape_unescaped_string_quotes(text: str) -> str:
-    out: list[str] = []
-    in_string = False
-    escaped = False
-
-    for i, ch in enumerate(text):
-        if ch == '"' and not escaped:
-            if in_string:
-                j = i + 1
-                while j < len(text) and text[j].isspace():
-                    j += 1
-                if j < len(text) and text[j] not in ",:}]":
-                    out.append(r'\"')
-                    continue
-            in_string = not in_string
-
-        out.append(ch)
-        escaped = ch == "\\" and not escaped
-        if ch != "\\":
-            escaped = False
-
-    return "".join(out)
-
-
-# Parse a model-produced JSON object, tolerating common small JSON mistakes
+# parse a model-produced JSON object -> attempt repairing malformed objects 
 def parse_json_object(text: str) -> dict:
-    text = _extract_json_object(text)
-    attempts = [
-        text,
-        _escape_stray_backslashes(text),
-        _escape_unescaped_string_quotes(_escape_stray_backslashes(text)),
-    ]
-
-    last_error = None
-    for candidate in attempts:
+    try:
+        obj = json.loads(text)
+    except json.JSONDecodeError:
         try:
-            return json.loads(candidate)
-        except json.JSONDecodeError as err:
-            last_error = err
+            obj = json_repair.loads(text)
+        except Exception as err:
+            raise Exception(f"Could not repair malformed JSON: {err}") from err
 
-    raise last_error
+    return obj
 
 # run the grading prompt with test case and test case result
 def grade_by_model(grader_prompt: str, test_case: dict, result: str) -> dict:
