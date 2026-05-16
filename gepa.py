@@ -9,7 +9,6 @@ from evaluation import (
     chat,
     add_user_message,
     add_assistant_message,
-    compile_prompt_template,
     generate_dataset,
     run_prompt,
     grade_by_model,
