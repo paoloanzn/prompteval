@@ -144,7 +144,10 @@ def parse_json_object(text: str) -> dict:
 # run the grading prompt with test case and test case result
 def grade_by_model(grader_prompt: str, test_case: dict, result: str) -> dict:
     messages = []
-    add_user_message(messages, compile_prompt_template(grader_prompt, {"task": test_case["task"], "result": result}))
+    vars = {"task": test_case["task"], "result": result}
+    if "gold" in test_case:
+        vars["gold"] = test_case["gold"]
+    add_user_message(messages, compile_prompt_template(grader_prompt, vars))
     add_assistant_message(messages, "```json")
     eval_text = chat(messages, stop_sequences=["```"], temperature=0)  # frozen inference -> grader should be deterministic-ish
 

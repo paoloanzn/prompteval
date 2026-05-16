@@ -95,6 +95,8 @@ class InstanceMetadata:
 # -> returns a score between [0, 1] and a feedback string
 def score_with_feedback(grader_prompt: str, y: Schema, m: InstanceMetadata) -> tuple[float, str]:
     test_case = {"task": m.gold["task"]}
+    if "gold" in m.gold:
+        test_case["gold"] = m.gold["gold"]
     result_text = y["result"]
 
     grade = grade_by_model(grader_prompt, test_case, result_text)
