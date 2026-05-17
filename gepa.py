@@ -6,14 +6,12 @@ from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable
 from evaluation import (
-    chat,
-    add_user_message,
-    add_assistant_message,
     generate_dataset,
     run_prompt,
     grade_by_model,
     generate_run_uuid,
 )
+from client import chat, add_user_message, add_assistant_message
 import numpy as np
 from prompts import REFLECTION_META_PROMPT, TRACE_BLOCK
 from spinner import Spinner
