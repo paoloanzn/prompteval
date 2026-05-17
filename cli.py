@@ -12,7 +12,7 @@ from evaluation import (
 from gepa import run_gepa
 from spinner import Spinner
 
-def _prepare_output(output_dir: Path | str) -> tuple[str, str]:
+def _prepare_output(output_dir: Path | str) -> tuple[str, Path]:
     if type(output_dir) == str:
         output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -21,10 +21,20 @@ def _prepare_output(output_dir: Path | str) -> tuple[str, str]:
     return run_id, output_dir
 
 
-def cmd_generate(args):
-    run_id, output_dir = _prepare_output(args.output)
-
-    _, dataset_prompt, _ = load_evaluation_prompts(prompts_folder=args.prompts)
+def _load_or_generate_dataset(
+    dataset_path: str | None,
+    dataset_prompt: str | None,
+    output_dir: Path,
+    run_id: str,
+) -> tuple[list[dict], Path]:
+    if dataset_path:
+        path = Path(dataset_path)
+        if not path.is_file():
+            raise SystemExit(f"[ERROR] dataset file not found: {path}")
+        with open(path, "r", encoding="utf-8") as f:
+            dataset = json.load(f)
+        print(f"✓ Loaded dataset from {path} ({len(dataset)} test cases)")
+        return dataset, path
 
     spinner = Spinner("Generating dataset")
     spinner.start()
@@ -34,11 +44,19 @@ def cmd_generate(args):
         elapsed = spinner.stop()
         print(f"✓ Dataset generated in {elapsed:.2f}s")
 
-    dataset_path = output_dir / f"dataset-{run_id}.json"
-    with open(dataset_path, "w", encoding="utf-8") as f:
+    path = output_dir / f"dataset-{run_id}.json"
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(dataset, f, indent=2)
+    print(f"✓ Dataset saved to {path}")
+    return dataset, path
 
-    print(f"✓ Dataset saved to {dataset_path}")
+
+def cmd_generate(args):
+    run_id, output_dir = _prepare_output(args.output)
+
+    _, dataset_prompt, _ = load_evaluation_prompts(prompts_folder=args.prompts)
+
+    dataset, _ = _load_or_generate_dataset(None, dataset_prompt, output_dir, run_id)
     print(f"  {len(dataset)} test cases")
 
 
@@ -51,26 +69,7 @@ def cmd_evaluate(args):
     if not validate(target_prompt):
         raise SystemExit("[ERROR] target prompt missing {{task}} placeholder")
 
-    if args.dataset:
-        dataset_path = Path(args.dataset)
-        if not dataset_path.is_file():
-            raise SystemExit(f"[ERROR] dataset file not found: {dataset_path}")
-        with open(dataset_path, "r", encoding="utf-8") as f:
-            dataset = json.load(f)
-        print(f"✓ Loaded dataset from {dataset_path} ({len(dataset)} test cases)")
-    else:
-        spinner = Spinner("Generating dataset")
-        spinner.start()
-        try:
-            dataset = generate_dataset(dataset_prompt)
-        finally:
-            elapsed = spinner.stop()
-            print(f"✓ Dataset generated in {elapsed:.2f}s")
-
-        dataset_path = output_dir / f"dataset-{run_id}.json"
-        with open(dataset_path, "w", encoding="utf-8") as f:
-            json.dump(dataset, f, indent=2)
-        print(f"✓ Dataset saved to {dataset_path}")
+    dataset, _ = _load_or_generate_dataset(args.dataset, dataset_prompt, output_dir, run_id)
 
     spinner = Spinner("Running evaluation")
     spinner.start()
@@ -106,26 +105,7 @@ def cmd_optimize(args):
     if not validate(target_prompt):
         raise SystemExit("[ERROR] target prompt missing {{task}} placeholder")
 
-    if args.dataset:
-        dataset_path = Path(args.dataset)
-        if not dataset_path.is_file():
-            raise SystemExit(f"[ERROR] dataset file not found: {dataset_path}")
-        with open(dataset_path, "r", encoding="utf-8") as f:
-            dataset = json.load(f)
-        print(f"✓ Loaded dataset from {dataset_path} ({len(dataset)} test cases)")
-    else:
-        spinner = Spinner("Generating dataset")
-        spinner.start()
-        try:
-            dataset = generate_dataset(dataset_prompt)
-        finally:
-            elapsed = spinner.stop()
-            print(f"✓ Dataset generated in {elapsed:.2f}s")
-
-        dataset_path = output_dir / f"dataset-{run_id}.json"
-        with open(dataset_path, "w", encoding="utf-8") as f:
-            json.dump(dataset, f, indent=2)
-        print(f"✓ Dataset saved to {dataset_path}")
+    dataset, _ = _load_or_generate_dataset(args.dataset, dataset_prompt, output_dir, run_id)
 
     optimized, pool, scores = run_gepa(
         seed_prompt=target_prompt,
