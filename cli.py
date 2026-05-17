@@ -12,10 +12,17 @@ from evaluation import (
 from gepa import run_gepa
 from spinner import Spinner
 
+def _prepare_output(output_dir: Path | str) -> tuple[str, str]:
+    if type(output_dir) == str:
+        output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    run_id = generate_run_uuid()
+
+    return run_id, output_dir
+
 
 def cmd_generate(args):
-    output_dir = Path(args.output)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    run_id, output_dir = _prepare_output(args.output)
 
     _, dataset_prompt, _ = load_evaluation_prompts(prompts_folder=args.prompts)
 
@@ -27,7 +34,6 @@ def cmd_generate(args):
         elapsed = spinner.stop()
         print(f"✓ Dataset generated in {elapsed:.2f}s")
 
-    run_id = generate_run_uuid()
     dataset_path = output_dir / f"dataset-{run_id}.json"
     with open(dataset_path, "w", encoding="utf-8") as f:
         json.dump(dataset, f, indent=2)
@@ -37,9 +43,7 @@ def cmd_generate(args):
 
 
 def cmd_evaluate(args):
-    output_dir = Path(args.output)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    run_id = generate_run_uuid()
+    run_id, output_dir = _prepare_output(args.output)
 
     target_prompt, dataset_prompt, grader_prompt = load_evaluation_prompts(
         prompts_folder=args.prompts,
@@ -94,9 +98,7 @@ def cmd_evaluate(args):
 
 
 def cmd_optimize(args):
-    output_dir = Path(args.output)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    run_id = generate_run_uuid()
+    run_id, output_dir = _prepare_output(args.output)
 
     target_prompt, dataset_prompt, grader_prompt = load_evaluation_prompts(
         prompts_folder=args.prompts,
