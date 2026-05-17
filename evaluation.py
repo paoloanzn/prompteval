@@ -1,42 +1,10 @@
-from dotenv import load_dotenv
-from anthropic import Anthropic
-import os
 import json
 import sys
 from pathlib import Path
 from uuid import uuid4
 from spinner import Spinner
 import json_repair
-
-load_dotenv()
-
-client = Anthropic(auth_token=os.environ["ANTHROPIC_OAUTH_TOKEN"])
-model = os.environ.get("MODEL", "claude-haiku-4-5")
-
-# anthropic helpers
-def add_user_message(messages, text):
-    user_message = {"role": "user", "content": text}
-    messages.append(user_message)
-
-
-def add_assistant_message(messages, text):
-    assistant_message = {"role": "assistant", "content": text}
-    messages.append(assistant_message)
-
-def chat(messages, system=None, temperature=1.0, stop_sequences=[]):
-    params = {
-        "model": model,
-        "max_tokens": 8000,
-        "messages": messages,
-        "temperature": temperature,
-        "stop_sequences": stop_sequences,
-    }
-
-    if system:
-        params["system"] = system
-
-    message = client.messages.create(**params)
-    return message.content[0].text
+from client import add_user_message, add_assistant_message, chat
 
 # prompt helpers
 
@@ -119,7 +87,7 @@ def generate_dataset(dataset_prompt: str) -> list[dict]:
     add_user_message(messages, dataset_prompt)
     add_assistant_message(messages, "```json")
     text = chat(messages, stop_sequences=["```"])
-    return json.loads(text)
+    return parse_json_object(text)
 
 
 # runs the prompt to evaluate against a test case from the generated dataset
@@ -138,6 +106,9 @@ def parse_json_object(text: str) -> dict:
             obj = json_repair.loads(text)
         except Exception as err:
             raise Exception(f"Could not repair malformed JSON: {err}") from err
+
+    if not isinstance(obj, dict) and not isinstance(obj, list):
+        raise Exception(f"Expected JSON object or list, got {type(obj).__name__}: {text[:200]}")
 
     return obj
 
