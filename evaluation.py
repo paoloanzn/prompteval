@@ -4,7 +4,7 @@ from pathlib import Path
 from uuid import uuid4
 from spinner import Spinner
 import json_repair
-from client import add_user_message, add_assistant_message, chat
+from client import add_user_message, add_assistant_message, chat, teacher_client, teacher_model
 
 # prompt helpers
 
@@ -86,7 +86,7 @@ def generate_dataset(dataset_prompt: str) -> list[dict]:
     messages = []
     add_user_message(messages, dataset_prompt)
     add_assistant_message(messages, "```json")
-    text = chat(messages, stop_sequences=["```"], max_tokens=64000)
+    text = chat(messages, stop_sequences=["```"], max_tokens=64000, _client=teacher_client, _model=teacher_model)
     return parse_json_object(text)
 
 
@@ -120,7 +120,7 @@ def grade_by_model(grader_prompt: str, test_case: dict, result: str) -> dict:
         vars["gold"] = test_case["gold"]
     add_user_message(messages, compile_prompt_template(grader_prompt, vars))
     add_assistant_message(messages, "```json")
-    eval_text = chat(messages, stop_sequences=["```"], temperature=0)  # frozen inference -> grader should be deterministic-ish
+    eval_text = chat(messages, stop_sequences=["```"], temperature=0, _client=teacher_client, _model=teacher_model)  # frozen inference -> grader should be deterministic-ish
 
     return parse_json_object(eval_text)
 

@@ -112,11 +112,19 @@ def make_client(
         kwargs["auth_token"] = key
     return OpenAI(**kwargs)
 
+# client init
+# we use a student(client)-teacher(teacher_client) model -> scoring and dataset gen require smarter models
 
-client = make_client(Provider.ANTHROPIC)
-model = os.environ.get("MODEL", "claude-haiku-4-5")
-# client = make_client(Provider.OPENROUTER)
-# current_provider = Provider.OPENROUTER 
+# used by: run_prompt(), reflect_and_rewrite()
+client = make_client(Provider.OPENROUTER)
+model = os.environ.get("STUDENT", "nvidia/nemotron-3-nano-30b-a3b")
+
+# used by: generate_dataset(), grade_by_model()
+teacher_client = make_client(Provider.ANTHROPIC)
+teacher_model = os.environ.get("TEACHER", "claude-haiku-4-5")
+
+if not model or not teacher_model:
+    raise ValueError(f"{model if not model else teacher_model} model not defined.")
 
 def add_user_message(messages, text):
     user_message = {"role": "user", "content": text}
@@ -136,10 +144,10 @@ def _extract_text(content) -> str:
     return ""
 
 
-def chat(messages, system=None, temperature=1.0, stop_sequences=[], max_tokens=8000):
-    if isinstance(client, Anthropic):
+def chat(messages, system=None, temperature=1.0, stop_sequences=[], max_tokens=8000, *, _client: Client = client, _model: str = model):
+    if isinstance(_client, Anthropic):
         params = {
-            "model": model,
+            "model": _model,
             "max_tokens": max_tokens,
             "messages": messages,
             "temperature": temperature,
@@ -148,13 +156,13 @@ def chat(messages, system=None, temperature=1.0, stop_sequences=[], max_tokens=8
         }
         if system:
             params["system"] = system
-        message = client.messages.create(**params)
+        message = _client.messages.create(**params)
         return "".join(block.text for block in message.content if block.type == "text")
 
-    if isinstance(client, OpenRouter):
+    if isinstance(_client, OpenRouter):
         from openrouter.components.chatrequest import Reasoning
         params: dict[str, Any] = {
-            "model": model,
+            "model": _model,
             "max_tokens": max_tokens,
             "messages": messages,
             "temperature": temperature,
@@ -164,12 +172,12 @@ def chat(messages, system=None, temperature=1.0, stop_sequences=[], max_tokens=8
             params["messages"] = [{"role": "system", "content": system}] + messages
         if stop_sequences:
             params["stop"] = stop_sequences
-        response = client.chat.send(**params)
+        response = _client.chat.send(**params)
         return _extract_text(response.choices[0].message.content)
 
     # OpenAI
     params = {
-        "model": model,
+        "model": _model,
         "max_tokens": max_tokens,
         "messages": messages,
         "temperature": temperature,
@@ -178,5 +186,6 @@ def chat(messages, system=None, temperature=1.0, stop_sequences=[], max_tokens=8
         params["system"] = system
     if stop_sequences:
         params["stop"] = stop_sequences
-    completion = client.chat.completions.create(**params)
+    completion = _client.chat.completions.create(**params)
     return _extract_text(completion.choices[0].message.content)
+
