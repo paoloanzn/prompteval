@@ -2,3 +2,5 @@ anthropic>=0.100.0
 numpy>=2.0
 python-dotenv>=1.0
 json_repair>=0.59.9
+openrouter==0.9.1
+openai==2.37.0
