@@ -113,10 +113,10 @@ def make_client(
     return OpenAI(**kwargs)
 
 
-# client = make_client(Provider.ANTHROPIC)
+client = make_client(Provider.ANTHROPIC)
 model = os.environ.get("MODEL", "claude-haiku-4-5")
-client = make_client(Provider.OPENROUTER)
-current_provider = Provider.OPENROUTER 
+# client = make_client(Provider.OPENROUTER)
+# current_provider = Provider.OPENROUTER 
 
 def add_user_message(messages, text):
     user_message = {"role": "user", "content": text}
@@ -136,11 +136,11 @@ def _extract_text(content) -> str:
     return ""
 
 
-def chat(messages, system=None, temperature=1.0, stop_sequences=[]):
+def chat(messages, system=None, temperature=1.0, stop_sequences=[], max_tokens=8000):
     if isinstance(client, Anthropic):
         params = {
             "model": model,
-            "max_tokens": 8000,
+            "max_tokens": max_tokens,
             "messages": messages,
             "temperature": temperature,
             "stop_sequences": stop_sequences,
@@ -155,7 +155,7 @@ def chat(messages, system=None, temperature=1.0, stop_sequences=[]):
         from openrouter.components.chatrequest import Reasoning
         params: dict[str, Any] = {
             "model": model,
-            "max_tokens": 8000,
+            "max_tokens": max_tokens,
             "messages": messages,
             "temperature": temperature,
             "reasoning": Reasoning(effort="none"),
@@ -170,7 +170,7 @@ def chat(messages, system=None, temperature=1.0, stop_sequences=[]):
     # OpenAI
     params = {
         "model": model,
-        "max_tokens": 8000,
+        "max_tokens": max_tokens,
         "messages": messages,
         "temperature": temperature,
     }

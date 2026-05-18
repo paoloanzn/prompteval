@@ -86,7 +86,7 @@ def generate_dataset(dataset_prompt: str) -> list[dict]:
     messages = []
     add_user_message(messages, dataset_prompt)
     add_assistant_message(messages, "```json")
-    text = chat(messages, stop_sequences=["```"])
+    text = chat(messages, stop_sequences=["```"], max_tokens=64000)
     return parse_json_object(text)
 
 
