@@ -1,1 +1,81 @@
 Mini GEPA implementation https://arxiv.org/pdf/2507.19457
+
+SETUP
+
+  python -m venv .venv && source .venv/bin/activate
+  pip install -r requirements.txt
+
+CONFIGURATION
+
+  Create a .env file with your API keys. At least one is required:
+
+    ANTHROPIC_OAUTH_TOKEN=...    (for Anthropic API, install claude code and run `claude setup-token`)
+    OPENROUTER_API_KEY=...       (for OpenRouter API)
+    OPENAI_API_KEY=...           (for OpenAI API)
+
+  Optional model overrides:
+
+    STUDENT=...    model used for running the target prompt during optimization (default: nvidia/nemotron-3-nano-30b-a3b)
+    TEACHER=...    model used for dataset generation and grading (default: claude-haiku-4-5)
+
+  The default client provider are OpenRouter and Anthropic. Change it in client.py if needed.
+
+PROMPT FOLDER
+
+  A prompt folder must contain exactly three files:
+
+    target_prompt.txt (or .md)   - the prompt to evaluate/optimize, must contain {{task}}
+    dataset_prompt.txt (or .md)  - instructs the model to generate test cases as JSON
+    grader_prompt.txt (or .md)   - evaluates model outputs, produces a 1-5 score and a feedback object
+
+  Example: example-prompts/
+
+USAGE
+
+  python cli.py <command> [options]
+
+Commands:
+
+  generate    Generate a dataset from the dataset prompt
+  evaluate    Evaluate a target prompt against a dataset
+  optimize    Run GEPA optimization to improve a target prompt
+
+Examples:
+
+  Generate a dataset:
+    python cli.py generate
+
+  Evaluate a prompt (generates dataset automatically):
+    python cli.py evaluate
+
+  Evaluate using an existing dataset:
+    python cli.py evaluate --dataset .output/dataset-abc123.json
+
+  Run GEPA optimization (default budget: 120):
+    python cli.py optimize
+
+  Run with custom settings and a pre-existing dataset:
+    python cli.py optimize --dataset .output/dataset-abc123.json --budget 300 --minibatch 6
+
+Flags:
+
+  All commands:
+    --prompts <dir>        prompt folder (default: example-prompts)
+    --output <dir>         output folder (default: .output)
+
+  evaluate:
+    --dataset <path>       load existing dataset JSON (generates one if omitted)
+
+  optimize:
+    --dataset <path>       load existing dataset JSON (generates one if omitted)
+    --budget <int>         rollout budget (default: 120)
+    --minibatch <int>      minibatch size (default: 3)
+    --pareto-ratio <float> pareto set ratio (default: 0.4)
+
+OUTPUT
+
+  All results are saved to .output/ by default:
+    dataset-<id>.json          generated datasets
+    evaluation-<id>.json       evaluation results
+    gepa-<id>.json             full GEPA run data
+    optimized-prompt-<id>.txt  best optimized prompt
