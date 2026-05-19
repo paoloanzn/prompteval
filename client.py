@@ -86,20 +86,37 @@ def make_client(
         kwargs["max_retries"] = max_retries
     return Anthropic(**kwargs) if config.api_contract == "anthropic" else OpenAI(**kwargs)
 
+def _model_from_env(env_key: str, default_provider: Provider, default_model: str) -> tuple[Provider, str]:
+    value = os.environ.get(env_key, default_model)
+    if ":" not in value:
+        return default_provider, value
+
+    provider, model_name = value.split(":", 1)
+    return Provider(provider), model_name
+
+
 # client init
 # we use a student(client)-teacher(teacher_client) model -> scoring and dataset gen require smarter models
 
 # used by: run_prompt(), reflect_and_rewrite()
+student_provider, model = _model_from_env(
+    "STUDENT_MODEL",
+    Provider.OPENROUTER,
+    "nvidia/nemotron-3-nano-30b-a3b",
+)
 client = (
-    make_client(Provider.OPENROUTER)
-    if os.environ.get(PROVIDERS[Provider.OPENROUTER].env_key)
+    make_client(student_provider)
+    if os.environ.get(PROVIDERS[student_provider].env_key)
     else None
 )
-model = os.environ.get("STUDENT", "nvidia/nemotron-3-nano-30b-a3b")
 
 # used by: generate_dataset(), grade_by_model()
-teacher_client = make_client(Provider.ANTHROPIC)
-teacher_model = os.environ.get("TEACHER", "claude-haiku-4-5")
+teacher_provider, teacher_model = _model_from_env(
+    "TEACHER_MODEL",
+    Provider.ANTHROPIC,
+    "claude-haiku-4-5",
+)
+teacher_client = make_client(teacher_provider)
 
 if not model or not teacher_model:
     raise ValueError(f"{model if not model else teacher_model} model not defined.")
@@ -208,7 +225,7 @@ def chat(
         _model: str = model,
 ):
     if _client is None:
-        raise ValueError("Missing OPENROUTER_API_KEY for student client")
+        raise ValueError(f"Missing {PROVIDERS[student_provider].env_key} for student client")
 
     if isinstance(_client, Anthropic):
         params = {
