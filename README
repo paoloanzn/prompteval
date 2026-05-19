@@ -15,10 +15,13 @@ CONFIGURATION
 
   Optional model overrides:
 
-    STUDENT=...    model used for running the target prompt during optimization (default: nvidia/nemotron-3-nano-30b-a3b)
-    TEACHER=...    model used for dataset generation and grading (default: claude-haiku-4-5)
+    STUDENT_MODEL=...    model used for running the target prompt during optimization (default: nvidia/nemotron-3-nano-30b-a3b)
+    TEACHER_MODEL=...    model used for dataset generation and grading (default: claude-haiku-4-5)
 
-  The default client provider are OpenRouter and Anthropic. Change it in client.py if needed.
+  Prefix a model with a provider to override the default clients:
+
+    STUDENT_MODEL=openai:gpt-4.1
+    TEACHER_MODEL=openrouter:<model-id>
 
 PROMPT FOLDER
 
@@ -29,6 +32,22 @@ PROMPT FOLDER
     grader_prompt.txt (or .md)   - evaluates model outputs, produces a 1-5 score and a feedback object
 
   Example: example-prompts/
+  See example-prompts/HOWTO.txt for detailed rules and a copy-paste prompt to generate valid prompts with any AI.
+
+PROMPT CREATION REPL
+
+  Interactive tool to create dataset and grader prompts conversationally:
+
+    python repl.py                     # uses default .output folder
+    python repl.py my-prompts/         # custom output folder
+
+  Commands inside the REPL:
+    /q                     quit
+    /s <folder>            change output folder
+    /save dataset          save last generated dataset prompt
+    /save grader           save last generated grader prompt
+
+  Describe your task, refine through conversation, then save.
 
 USAGE
 
