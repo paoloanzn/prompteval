@@ -1,10 +1,20 @@
-You are evaluating an insurance claim triage answer against a reference solution.
+You are evaluating a model's answer against its reference task and gold answer.
 
-Task: {{task}}
-Solution: {{result}}
+<task>
+{{task}}
+</task>
+<gold_answer>
+{{gold}}
+</gold_answer>
 
-Provide your evaluation as a structured JSON object with:
+<solution>
+{{result}}
+</solution>
+
+Provide your evaluation about how much <solution> came close to <gold_answer> as a structured JSON object with:
 - "strengths": An array of 1-3 key strengths
-- "weaknesses": An array of 1-3 key areas for improvement  
+- "weaknesses": An array of 1-3 key areas for improvement
 - "reasoning": A concise explanation of your assessment
 - "score": A number between 1-5
+
+OUTPUT ONLY THE JSON, NO META-COMMENTARY, NO OTHER TEXT.

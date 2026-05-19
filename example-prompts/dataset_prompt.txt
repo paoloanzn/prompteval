@@ -1,22 +1,25 @@
-Generate an evaluation dataset for testing prompts that triage an insurance claim
-description into a structured decision.
+Generate an evaluation dataset for testing prompts that classify a short Python
+snippet for a specific security vulnerability category.
 
 Output format:
-```json
+<json_block>
 [
-  {"task": "Insurance claim narrative:\n<3-5 sentence description of incident, damage, and policy context>\n\nProduce a single triage decision in this exact format:\n  DECISION: <approve|deny|investigate|escalate>\n  REASON_CODE: <one of: covered_peril|excluded_peril|insufficient_evidence|fraud_indicator|policy_lapsed|exceeds_limit|requires_adjuster>\n  CONFIDENCE: <low|medium|high>"},
-  ...
+  {"task": "Classify the following Python snippet. Decide whether it contains the\nvulnerability category listed, and if so, the line where it is introduced.\n\nCategory under test: <sql_injection|path_traversal|command_injection|unsafe_deserialization|hardcoded_secret|ssrf>\n\n```python\n<5-25 line snippet, lines numbered starting at 1>\n```\n\nFormat:\n  VULNERABLE: <yes|no>\n  LINE: <integer line number, or - if no>\n  EVIDENCE: <one short clause naming the sink and the tainted source, or - if no>"},
+  {"gold": "Correct classification"}
 ]
-```
+</json_block>
 
 Constraints on tasks:
-* Mix peril types: water damage, fire, theft, auto collision, hail, liability.
-* Include policy edge cases: flood exclusion in standard homeowners, named-storm
-  deductibles, vehicle use exclusion (commercial vs personal), wear-and-tear vs
-  sudden damage.
-* Include fraud indicators: claim filed weeks after the event, prior similar claims,
-  inconsistencies between police report and claim narrative.
-* Each narrative includes the policy summary inline so the answer is derivable from
-  the task itself.
+* Roughly half positive, half negative. Negatives must include lookalikes:
+  parameterized queries that resemble concatenation, os.path.join on a
+  constant, subprocess with shell=False and a list argv, pickle.loads on a
+  bytes literal defined in-source, secrets loaded from os.environ, urllib
+  requests to a constant URL.
+* Positives must have an unambiguous taint path from an external source
+  (request arg, sys.argv, file read, env-derived URL, deserialized payload)
+  to the dangerous sink, with no sanitization or allowlist in between.
+* Each snippet is self-contained: all imports shown, no helper functions
+  referenced outside the snippet, so the verdict is derivable from the task
+  alone.
 
-Generate 10 objects.
+Generate 20 objects.
