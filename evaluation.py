@@ -85,8 +85,8 @@ def validate(target_prompt: str) -> bool:
 def generate_dataset(dataset_prompt: str) -> list[dict]:
     messages = []
     add_user_message(messages, dataset_prompt)
-    add_assistant_message(messages, "```json")
-    text = chat(messages, stop_sequences=["```"], max_tokens=64000, _client=teacher_client, _model=teacher_model)
+    add_assistant_message(messages, "<json_block>")
+    text = chat(messages, stop_sequences=["</json_block>"], _client=teacher_client, _model=teacher_model)
     return parse_json_object(text)
 
 
